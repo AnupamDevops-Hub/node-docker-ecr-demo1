@@ -1,21 +1,22 @@
-name: Deploy Node.js App to EC2
+name: Deploy Node.js App to EC2 - QA Environment
 
 on:
   push:
     branches:
-      - main
+      - qa
 
 env:
   AWS_REGION: eu-north-1
-  ECR_REPOSITORY: ecr-demo-repositry
+  ECR_REPOSITORY: ecr-demo-repository
 
 jobs:
-  build-and-deploy:
-
+  build-and-deploy-qa:
     runs-on: ubuntu-latest
+    
+    # Target the QA environment to use environment-specific secrets
+    environment: qa 
 
     steps:
-
       # 1. Checkout source code
       - name: Checkout code
         uses: actions/checkout@v4
@@ -24,8 +25,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_QA }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_QA }}
           aws-region: ${{ env.AWS_REGION }}
 
       # 3. Login to Amazon ECR
@@ -40,7 +41,7 @@ jobs:
         run: |
           docker build \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:qa-latest \
             .
 
       # 5. Push Docker image to ECR
@@ -49,31 +50,29 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:qa-latest
 
-      # 6. Deploy image to EC2
-      - name: Deploy to EC2
+      # 6. Deploy image to QA EC2
+      - name: Deploy to QA EC2
         uses: appleboy/ssh-action@v1.2.0
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY_QA }}
           IMAGE_TAG: ${{ github.sha }}
           AWS_REGION: ${{ env.AWS_REGION }}
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          host: ${{ secrets.QA_EC2_HOST_QA }}
+          username: ${{ secrets.QA_EC2_USERNAME_QA }}
+          key: ${{ secrets.QA_EC2_SSH_KEY_QA }}
           envs: ECR_REGISTRY,ECR_REPOSITORY,IMAGE_TAG,AWS_REGION
           script: |
-            
             set -e
 
             echo "================================"
-            echo "Starting deployment"
+            echo "Starting QA deployment"
             echo "================================"
 
             echo "Logging in to ECR..."
-
             aws ecr get-login-password \
               --region $AWS_REGION | \
               docker login \
@@ -81,39 +80,30 @@ jobs:
               --password-stdin $ECR_REGISTRY
 
             echo "Pulling new Docker image..."
-
             docker pull \
               $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
             echo "Stopping old container..."
-
-            docker stop node-app || true
+            docker stop qa-node-app || true
 
             echo "Removing old container..."
+            docker rm qa-node-app || true
 
-            docker rm node-app || true
-
-            echo "Starting new container..."
-
+            echo "Starting new QA container..."
             docker run -d \
-              --name node-app \
+              --name qa-node-app \
               --restart unless-stopped \
               -p 3000:3000 \
-              -e ENV=DEV \
+              -e ENV=QA \
               $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
             echo "Checking container status..."
-
-            docker ps
+            docker ps | grep qa-node-app
 
             echo "Checking application..."
-
             sleep 5
-
             curl -f http://localhost:3000
 
             echo "================================"
-            echo "Deployment successful"
+            echo "QA Deployment successful"
             echo "================================"
-
-
