@@ -1,4 +1,4 @@
-name: Deploy Node.js App to ecr-demo-docker EC2 (QA)
+name: Deploy Node.js App to docker-demo1 EC2 (QA)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 env:
   AWS_REGION: eu-north-1 # Base region for eu-north-1a
-  ECR_REPOSITORY: ecr-demo-docker
+  ECR_REPOSITORY: docker-demo1
 
 jobs:
   build-and-deploy-qa:
@@ -53,7 +53,7 @@ jobs:
           docker push "$ECR_REGISTRY/$ECR_REPOSITORY:qa-latest"
 
       # Deploys to ecr-demo-docker instance
-      - name: Deploy to ecr-demo-docker EC2
+      - name: Deploy to docker-demo1
         uses: appleboy/ssh-action@v1.2.0
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
