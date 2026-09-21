@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - qa
+  workflow_dispatch:
 
 env:
   AWS_REGION: eu-north-1
@@ -12,16 +13,12 @@ env:
 jobs:
   build-and-deploy-qa:
     runs-on: ubuntu-latest
-    
-    # Target the QA environment to use environment-specific secrets
-    environment: qa 
+    environment: qa
 
     steps:
-      # 1. Checkout source code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -29,41 +26,47 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_QA }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 3. Login to Amazon ECR
+      - name: Verify AWS and ECR configuration
+        run: |
+          echo "AWS Region: $AWS_REGION"
+          echo "ECR Repository: $ECR_REPOSITORY"
+          aws sts get-caller-identity
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION"
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 4. Build Docker image
       - name: Build Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker build \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:qa-latest \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}" \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:qa-latest" \
             .
 
-      # 5. Push Docker image to ECR
       - name: Push Docker image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:qa-latest
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:qa-latest"
 
-      # 6. Deploy image to QA EC2
       - name: Deploy to QA EC2
         uses: appleboy/ssh-action@v1.2.0
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY_QA }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ github.sha }}
           AWS_REGION: ${{ env.AWS_REGION }}
         with:
-          host: ${{ secrets.QA_EC2_HOST_QA }}
-          username: ${{ secrets.QA_EC2_USERNAME_QA }}
-          key: ${{ secrets.QA_EC2_SSH_KEY_QA }}
+          host: ${{ secrets.QA_EC2_HOST_QA || secrets.EC2_HOST }}
+          username: ${{ secrets.QA_EC2_USERNAME_QA || secrets.EC2_USERNAME }}
+          key: ${{ secrets.QA_EC2_SSH_KEY_QA || secrets.EC2_SSH_KEY }}
+          port: 22
+          timeout: 30s
+          command_timeout: 10m
           envs: ECR_REGISTRY,ECR_REPOSITORY,IMAGE_TAG,AWS_REGION
           script: |
             set -e
@@ -71,17 +74,27 @@ jobs:
             echo "================================"
             echo "Starting QA deployment"
             echo "================================"
+            echo "AWS Region: $AWS_REGION"
+            echo "EC2 Availability Zone: eu-north-1a"
+            echo "ECR Repository: $ECR_REPOSITORY"
+            echo "Image Tag: $IMAGE_TAG"
+
+            command -v aws >/dev/null 2>&1 || {
+              echo "ERROR: AWS CLI is not installed on EC2."
+              exit 1
+            }
+
+            command -v docker >/dev/null 2>&1 || {
+              echo "ERROR: Docker is not installed on EC2."
+              exit 1
+            }
 
             echo "Logging in to ECR..."
-            aws ecr get-login-password \
-              --region $AWS_REGION | \
-              docker login \
-              --username AWS \
-              --password-stdin $ECR_REGISTRY
+            aws ecr get-login-password --region "$AWS_REGION" |
+              docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-            echo "Pulling new Docker image..."
-            docker pull \
-              $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            echo "Pulling image..."
+            docker pull "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
             echo "Stopping old container..."
             docker stop qa-node-app || true
@@ -95,15 +108,23 @@ jobs:
               --restart unless-stopped \
               -p 3000:3000 \
               -e ENV=QA \
-              $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+              "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-            echo "Checking container status..."
-            docker ps | grep qa-node-app
+            echo "Waiting for application..."
+            sleep 10
+
+            if ! docker ps --format '{{.Names}}' | grep -q '^qa-node-app$'; then
+              echo "ERROR: QA container is not running."
+              docker logs --tail 100 qa-node-app || true
+              exit 1
+            fi
+
+            echo "Container is running."
+            docker logs --tail 50 qa-node-app || true
 
             echo "Checking application..."
-            sleep 5
-            curl -f http://localhost:3000
+            curl --fail --silent --show-error --max-time 10 http://localhost:3000
 
             echo "================================"
-            echo "QA Deployment successful"
+            echo "QA Deployment Successful"
             echo "================================"
