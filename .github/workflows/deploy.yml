@@ -7,14 +7,14 @@ on:
 
 env:
   AWS_REGION: eu-north-1
-  ECR_REPOSITORY: ecr-demo-repository
+  ECR_REPOSITORY: ecr-demo-repository1
 
 jobs:
   build-and-deploy-qa:
     runs-on: ubuntu-latest
-    
+
     # Target the QA environment to use environment-specific secrets
-    environment: qa 
+    environment: qa
 
     steps:
       # 1. Checkout source code
@@ -34,30 +34,37 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 4. Build Docker image
+      # 4. Verify ECR repository
+      - name: Verify ECR repository
+        run: |
+          aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "$AWS_REGION"
+
+      # 5. Build Docker image
       - name: Build Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker build \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:qa-latest \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}" \
+            -t "$ECR_REGISTRY/$ECR_REPOSITORY:qa-latest" \
             .
 
-      # 5. Push Docker image to ECR
+      # 6. Push Docker image to ECR
       - name: Push Docker image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:qa-latest
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:qa-latest"
 
-      # 6. Deploy image to QA EC2
+      # 7. Deploy image to QA EC2
       - name: Deploy to QA EC2
         uses: appleboy/ssh-action@v1.2.0
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY_QA }}
+          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ github.sha }}
           AWS_REGION: ${{ env.AWS_REGION }}
         with:
@@ -74,14 +81,14 @@ jobs:
 
             echo "Logging in to ECR..."
             aws ecr get-login-password \
-              --region $AWS_REGION | \
+              --region "$AWS_REGION" | \
               docker login \
               --username AWS \
-              --password-stdin $ECR_REGISTRY
+              --password-stdin "$ECR_REGISTRY"
 
             echo "Pulling new Docker image..."
             docker pull \
-              $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+              "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
             echo "Stopping old container..."
             docker stop qa-node-app || true
@@ -95,7 +102,7 @@ jobs:
               --restart unless-stopped \
               -p 3000:3000 \
               -e ENV=QA \
-              $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+              "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
             echo "Checking container status..."
             docker ps | grep qa-node-app
