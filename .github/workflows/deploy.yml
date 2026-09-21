@@ -7,7 +7,7 @@ on:
 
 env:
   AWS_REGION: eu-north-1 # Base region for eu-north-1a
-  ECR_REPOSITORY: docker-demo1
+  ECR_REPOSITORY: ecr-demo-docker
 
 jobs:
   build-and-deploy-qa:
